@@ -1,0 +1,6 @@
+{
+  "name": "QuizKeen",
+  "description": "Multiplayer live quiz platform with PIN lobbies, flashcard battles, and classroom management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,125 @@
+"use server";
+import { prisma } from "@/lib/prisma";
+import { supabaseAdmin, hasServiceRoleKey } from "@/lib/supabaseAdmin";
+import { checkEmail, normalizeEmail, USERNAME_RE } from "@/lib/email-check";
+import { blockedVisitor } from "@/lib/ip-block";
+
+export type SignupCheck = { ok: true } | { ok: false; error: string };
+export type ProfileResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Everything a signup must pass BEFORE Supabase creates a user, so the person
+ * gets a clear Swedish error instead of a half-made account.
+ *
+ * Note on trust: the anon key is public, so a determined visitor can still call
+ * Supabase's signup endpoint directly and skip this form. `createProfile` below
+ * is therefore where the rule is enforced for real — see its comment.
+ */
+export async function checkRegistration(email: string, username: string): Promise<SignupCheck> {
+  // A blocked address gets no new account either — otherwise "block the
+  // connection" would only mean "pick a new name".
+  if (await blockedVisitor()) {
+    return { ok: false, error: "Den här uppkopplingen är blockerad från QuizKeen." };
+  }
+
+  const name = (username || "").trim();
+  if (!USERNAME_RE.test(name)) {
+    return { ok: false, error: "Användarnamnet måste vara 3–20 tecken: bokstäver, siffror eller _." };
+  }
+
+  const verdict = await checkEmail(email);
+  if (!verdict.ok && verdict.reason === "syntax") {
+    return { ok: false, error: "E-postadressen ser inte ut som en riktig adress. Skriv t.ex. namn@exempel.se." };
+  }
+  if (!verdict.ok && verdict.reason === "provider") {
+    const domain = normalizeEmail(email).split("@")[1] || "";
+    return {
+      ok: false,
+      error: `"${domain}" är en webbadress, inte en e-postdomän. Adressen hos ${verdict.provider} är bara namn@${verdict.provider} — inget före eller efter.`,
+    };
+  }
+  if (!verdict.ok && verdict.reason === "typo") {
+    return { ok: false, error: `Domänen ser ut som ett stavfel — menade du @${verdict.suggest}?` };
+  }
+  if (!verdict.ok) {
+    const domain = normalizeEmail(email).split("@")[1] || "domänen";
+    return { ok: false, error: `Domänen "${domain}" kan inte ta emot e-post. Använd en adress du verkligen har.` };
+  }
+
+  const taken = await prisma.profile
+    .findUnique({ where: { username: name }, select: { id: true } })
+    .catch(() => null);
+  if (taken) return { ok: false, error: "Användarnamnet är upptaget — välj ett annat." };
+
+  return { ok: true };
+}
+
+/**
+ * The address Supabase itself holds for this account — the only source we
+ * can't be lied to about. "" means "couldn't ask", never "no email": either no
+ * service-role key is configured or the lookup failed.
+ */
+async function authoritativeEmail(userId: string): Promise<string> {
+  if (!hasServiceRoleKey) return "";
+  try {
+    const { data } = await supabaseAdmin.auth.admin.getUserById(userId);
+    return normalizeEmail(data?.user?.email ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Create the profile row every page needs.
+ *
+ * This is the real gate. A profile is what makes an account usable in QuizKeen
+ * (every page redirects back to /register without one), so an address that
+ * ducked the form — or a browser that skipped it — never gets one, and the
+ * orphaned auth user is deleted again so the address stays free to retry.
+ */
+export async function createProfile(
+  userId: string,
+  username: string,
+  role: "STUDENT" | "TEACHER",
+  emailHint = ""
+): Promise<ProfileResult> {
+  const name = (username || "").trim();
+  if (!USERNAME_RE.test(name)) return { ok: false, error: "Ogiltigt användarnamn." };
+
+  // Last line of defence: the form check can be skipped by calling Supabase's
+  // signup directly, and an auth user without a profile is unusable anyway.
+  if (await blockedVisitor()) {
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    return { ok: false, error: "Den här uppkopplingen är blockerad från QuizKeen." };
+  }
+
+  // Ask the auth service what address this account actually has, rather than
+  // trusting anything the browser sent us. Only when that is impossible — no
+  // service-role key on this deploy (see supabaseAdmin.ts) or a failing lookup
+  // — fall back to the address from the form, which faces the same DNS check.
+  // A missing key must never cost us every signup.
+  const email = (await authoritativeEmail(userId)) || normalizeEmail(emailHint);
+
+  const verdict = email ? await checkEmail(email) : { ok: false as const };
+  if (!verdict.ok) {
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    return {
+      ok: false,
+      error: "E-postadressen kunde inte verifieras, så kontot skapades inte. Använd en riktig adress.",
+    };
+  }
+
+  try {
+    await prisma.profile.upsert({
+      where: { id: userId },
+      update: {},
+      create: { id: userId, username: name, role },
+    });
+  } catch {
+    // Almost always the unique username running into someone else's.
+    await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
+    return { ok: false, error: "Användarnamnet är upptaget — välj ett annat." };
+  }
+
+  return { ok: true };
+}

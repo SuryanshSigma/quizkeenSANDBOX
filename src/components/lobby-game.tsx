@@ -1,0 +1,571 @@
+"use client";
+import { useEffect, useRef } from "react";
+import Phaser from "phaser";
+import { KEEN_BY_ID, keenArtSrc, type Keen } from "@/lib/keens";
+import { wornIdFromCookieString } from "@/lib/worn";
+import {
+  CLEAR_BEFORE_GOAL,
+  DOUBLE_OFFSET,
+  SPAWN_AHEAD,
+  isDoubleSpike,
+  obstacleX,
+  seedFromPin,
+} from "@/lib/lobby-obstacles";
+
+const COLORS = [0x6366f1, 0xef4444, 0x22c55e, 0xeab308, 0xec4899, 0x06b6d4, 0xf97316, 0xa855f7, 0x14b8a6, 0xf43f5e];
+const WORLD_END = 170000;
+const RUN_SPEED = 270;
+/** How big the runner is drawn on screen. */
+const KEEN_RUNNER = 60;
+/** Texture resolution: just over 2× the runner, plenty for a token. */
+const KEEN_TEX = 128;
+
+/**
+ * Turn a Keen into a Phaser texture, once per Keen per game.
+ *
+ * The runner you steer in the lobby is the *same* picture as the card in your
+ * collection: the PNG the browser already knows how to decode, which Phaser
+ * keeps as the sprite texture. One asset, two frames.
+ *
+ * It resolves to `null` on any failure, and the caller keeps the plain coloured
+ * player, so a character can never break the game.
+ */
+const keenTextureCache = new WeakMap<Phaser.Scene, Map<string, Promise<string | null>>>();
+
+function ensureKeenTexture(scene: Phaser.Scene, keen: Keen): Promise<string | null> {
+  const key = `keen-runner-${keen.id}`;
+  if (scene.textures.exists(key)) return Promise.resolve(key);
+
+  let cache = keenTextureCache.get(scene);
+  if (!cache) {
+    cache = new Map();
+    keenTextureCache.set(scene, cache);
+  }
+  const pending = cache.get(key);
+  if (pending) return pending;
+
+  const job = new Promise<string | null>((resolve) => {
+    if (typeof Image === "undefined") return resolve(null);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        if (scene.textures.exists(key)) return resolve(key);
+        const tex = scene.textures.addImage(key, img);
+        resolve(tex ? key : null);
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    // The runner wears the same picture as its card — one asset, two frames.
+    img.src = keenArtSrc(keen);
+  });
+
+  cache.set(key, job);
+  return job;
+}
+
+/** Swap a sprite that was created with a plain colour over to its Keen art. */
+function wearTexture(sprite: Phaser.Physics.Arcade.Sprite, keen: Keen | undefined) {
+  if (!keen) return;
+  const scene = sprite.scene;
+  ensureKeenTexture(scene, keen).then((key) => {
+    if (!key || !sprite.active) return;
+    sprite.setTexture(key);
+    sprite.setDisplaySize(KEEN_RUNNER, KEEN_RUNNER);
+    const body = sprite.body as Phaser.Physics.Arcade.Body | null;
+    // Bodies are sized in texture pixels, not display pixels: using the runner
+    // size here left the actual hitbox at less than half the visible token.
+    if (body) body.setSize(sprite.width, sprite.height, true);
+  });
+}
+
+function colorIndexFor(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return h % COLORS.length;
+}
+
+function cssColor(c: number): string {
+  return "#" + c.toString(16).padStart(6, "0");
+}
+
+/**
+ * How often to broadcast our position, based on how many people are in the room.
+ *
+ * Supabase counts a broadcast once per recipient and measures the project's
+ * throughput as a rolling average, so a full lobby costs players^2 messages:
+ * sending every 100ms with 8 players would be ~230 delivered events a second
+ * and the channel gets closed for "too many messages per second". Smaller
+ * rooms get a higher rate, bigger rooms lean on the interpolation that the
+ * receiving side does, which keeps motion smooth at any of these rates.
+ */
+function sendIntervalMs(players: number): number {
+  if (players <= 2) return 100; // ~20 delivered events a second
+  if (players <= 4) return 150; // ~80
+  if (players <= 8) return 250; // ~220
+  return 400;
+}
+
+export default function LobbyGame({ pin, username }: { pin: string; username: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    // Not a const: the waiting room lets you change Keens, and the runner has
+    // to be re-dressed without restarting the game or reloading the page.
+    let wornKeenId = wornIdFromCookieString(document.cookie);
+    const myColor = colorIndexFor(username);
+    // Same PIN, same course on every screen — and a different course in every
+    // lobby, because the server picks the PIN at random.
+    const courseSeed = seedFromPin(pin);
+
+    class LobbyScene extends Phaser.Scene {
+      player!: Phaser.Physics.Arcade.Sprite;
+      obstacles!: Phaser.Physics.Arcade.Group;
+      others: Record<string, Phaser.Physics.Arcade.Sprite> = {};
+      otherLabels: Record<string, Phaser.GameObjects.Text> = {};
+      progress: Record<string, number> = {};
+      // last known position/velocity per remote player, used to draw them
+      // smoothly between the packets that arrive from the lobby channel
+      remote: Record<string, { x: number; y: number; vx: number; vy: number; at: number }> = {};
+      lastSent = { x: -9999, y: -9999, at: 0 };
+      nextSendAt = 0;
+      myLabel!: Phaser.GameObjects.Text;
+      boardText!: Phaser.GameObjects.Text;
+      keys: any = null;
+      wasd: any = null;
+      // Which spike number comes next. Positions are derived from (seed, index),
+      // so this is the only state the course needs.
+      obstacleIndex = 0;
+      finished = false;
+      trailG!: Phaser.GameObjects.Graphics;
+      trail: { x: number; y: number }[] = [];
+      lastDust = 0;
+      starsT!: Phaser.GameObjects.TileSprite;
+      mFarT!: Phaser.GameObjects.TileSprite;
+      mNearT!: Phaser.GameObjects.TileSprite;
+
+      constructor() {
+        super("LobbyScene");
+      }
+
+      preload() {
+        const g = this.add.graphics();
+        COLORS.forEach((c, i) => {
+          g.clear();
+          g.fillStyle(c, 0.3).fillRect(0, 0, 48, 48);
+          g.fillStyle(c, 1).fillRect(6, 6, 36, 36);
+          g.fillStyle(0xffffff, 1).fillRect(25, 16, 7, 10).fillRect(35, 16, 7, 10);
+          g.fillStyle(0x0f172a, 1).fillRect(28, 19, 3, 5).fillRect(38, 19, 3, 5);
+          g.generateTexture(`player-${i}`, 48, 48);
+        });
+        g.clear();
+        g.fillStyle(0xef4444, 0.35).fillTriangle(0, 56, 20, 0, 40, 56);
+        g.fillStyle(0xef4444, 1).fillTriangle(6, 56, 20, 8, 34, 56);
+        g.fillStyle(0xfecaca, 1).fillTriangle(17, 14, 20, 8, 23, 14);
+        g.generateTexture("obstacle", 40, 56);
+        g.clear();
+        g.fillStyle(0xf472b6, 1).fillRect(0, 0, 800, 4);
+        g.fillStyle(0x14081f, 1).fillRect(0, 4, 800, 24);
+        g.fillStyle(0x701a75, 1);
+        for (let gx = 0; gx < 800; gx += 40) g.fillRect(gx, 4, 2, 24);
+        g.generateTexture("ground", 800, 28);
+        g.clear();
+        const pal = [[8, 2, 16], [58, 12, 86], [134, 25, 143], [219, 39, 119], [251, 146, 60]];
+        for (let row = 0; row < 30; row++) {
+          const t = (row / 29) * (pal.length - 1);
+          const i = Math.min(pal.length - 2, Math.floor(t));
+          const f = t - i;
+          const r = Math.round(pal[i][0] + (pal[i + 1][0] - pal[i][0]) * f);
+          const gg = Math.round(pal[i][1] + (pal[i + 1][1] - pal[i][1]) * f);
+          const b = Math.round(pal[i][2] + (pal[i + 1][2] - pal[i][2]) * f);
+          g.fillStyle(Phaser.Display.Color.GetColor(r, gg, b), 1).fillRect(0, row * 10, 2, 10);
+        }
+        g.generateTexture("sky", 2, 300);
+        g.clear();
+        g.fillStyle(0xffffff, 1).fillCircle(3, 3, 3);
+        g.generateTexture("dot", 6, 6);
+        g.clear();
+        g.fillStyle(0xfbbf24, 1);
+        for (let y = 0; y < 160; y += 4) {
+          const r = Math.sqrt(Math.max(0, 80 * 80 - (y - 80) * (y - 80)));
+          const gap = y > 90 && (y - 90) % 16 < 6;
+          if (!gap && r > 0) g.fillRect(80 - r, y, r * 2, 4);
+        }
+        g.generateTexture("sun", 160, 160);
+        g.clear();
+        let x = 0;
+        g.fillStyle(0x86198f, 1);
+        while (x < 400) {
+          const w = 60 + Math.random() * 80;
+          const h = 40 + Math.random() * 90;
+          g.fillTriangle(x, 140, x + w / 2, 140 - h, x + w, 140);
+          x += w * 0.7;
+        }
+        g.generateTexture("mFar", 400, 140);
+        g.clear();
+        x = 0;
+        g.fillStyle(0x4a044e, 1);
+        while (x < 400) {
+          const w = 80 + Math.random() * 90;
+          const h = 30 + Math.random() * 70;
+          g.fillTriangle(x, 110, x + w / 2, 110 - h, x + w, 110);
+          x += w * 0.6;
+        }
+        g.generateTexture("mNear", 400, 110);
+        g.clear();
+        g.fillStyle(0xffffff, 0.8);
+        for (let i = 0; i < 40; i++) {
+          g.fillCircle(Math.random() * 400, Math.random() * 220, Math.random() * 1.5 + 0.5);
+        }
+        g.generateTexture("stars", 400, 300);
+        g.clear();
+        for (let y = 0; y < 300; y += 20) {
+          for (let xx = 0; xx < 60; xx += 20) {
+            g.fillStyle((xx / 20 + y / 20) % 2 === 0 ? 0xffffff : 0x111111, 1).fillRect(xx, y, 20, 20);
+          }
+        }
+        g.generateTexture("finish", 60, 300);
+        g.destroy();
+      }
+
+      create() {
+        const sky = this.add.image(400, 150, "sky").setScrollFactor(0).setDepth(0);
+        sky.setDisplaySize(800, 300);
+        this.starsT = this.add.tileSprite(400, 150, 800, 300, "stars").setScrollFactor(0).setDepth(1);
+        this.add.image(620, 180, "sun").setScrollFactor(0).setDepth(2).setAlpha(0.9);
+        this.mFarT = this.add.tileSprite(400, 204, 900, 140, "mFar").setScrollFactor(0).setDepth(3);
+        this.mNearT = this.add.tileSprite(400, 219, 900, 110, "mNear").setScrollFactor(0).setDepth(4);
+
+        this.physics.world.setBounds(0, 0, WORLD_END + 800, 300);
+
+        const ground = this.physics.add.staticImage((WORLD_END + 800) / 2, 288, "ground");
+        ground.setScale((WORLD_END + 1600) / 800, 1);
+        ground.refreshBody();
+        ground.setDepth(5);
+
+        this.player = this.physics.add.sprite(120, 200, `player-${myColor}`);
+        // The Keen art arrives asynchronously (an SVG has to be decoded first), so
+        // the player exists from the first frame as a coloured runner and wears
+        // its character a moment later.
+        wearTexture(this.player, KEEN_BY_ID[wornKeenId ?? ""]);
+        this.player.setCollideWorldBounds(true);
+        this.player.setDepth(8);
+        const pb = this.player.body as Phaser.Physics.Arcade.Body;
+        pb.setGravityY(-150);
+
+        this.myLabel = this.add.text(120, 160, username, {
+          fontSize: "13px",
+          color: cssColor(COLORS[myColor]),
+          fontStyle: "bold",
+        }).setOrigin(0.5).setDepth(9);
+
+        this.trailG = this.add.graphics().setDepth(7);
+        this.obstacles = this.physics.add.group();
+
+        this.physics.add.collider(this.player, ground);
+
+        this.physics.add.overlap(this.player, this.obstacles, () => {
+          if (this.finished) return;
+          this.burst(this.player.x, this.player.y, 0xef4444, 14);
+          this.player.setVelocity(0, 0);
+          this.player.setPosition(120, 200);
+          this.trail = [];
+          // Rebuild the stretch from the start. Safe now that a spike's position
+          // comes from the course seed, not from a random stream that had already
+          // moved on — before, this re-rolled the course for one player only.
+          this.obstacles.getChildren().forEach((c) => {
+            (c as Phaser.Physics.Arcade.Sprite).destroy();
+          });
+          this.obstacleIndex = 0;
+        });
+
+        const finish = this.physics.add.staticImage(WORLD_END, 150, "finish");
+        finish.setDepth(5);
+        this.add.text(WORLD_END, 30, "GOAL", {
+          fontSize: "22px",
+          color: "#ffffff",
+          fontStyle: "bold",
+        }).setOrigin(0.5).setDepth(9);
+        this.physics.add.overlap(this.player, finish, () => {
+          if (this.finished) return;
+          this.finished = true;
+          const t = Math.floor(this.time.now / 1000);
+          const mm = Math.floor(t / 60);
+          const ss = (t % 60).toString().padStart(2, "0");
+          this.burst(this.player.x, this.player.y - 20, 0xfbbf24, 24);
+          this.add.text(400, 120, `YOU FINISHED IN ${mm}:${ss}!`, {
+            fontSize: "28px",
+            color: "#ffffff",
+            fontStyle: "bold",
+          }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
+        });
+
+        if (this.input.keyboard) {
+          this.input.keyboard.addCapture(["SPACE", "UP", "RIGHT"]);
+          this.keys = this.input.keyboard.createCursorKeys();
+          this.wasd = this.input.keyboard.addKeys("D");
+          this.input.keyboard.on("keydown-SPACE", this.jump);
+          this.input.keyboard.on("keydown-UP", this.jump);
+        }
+        this.input.on("pointerdown", this.jump);
+
+        const hint = this.add.text(400, 50, "→ / D = run • SPACE = jump • obstacles = reset • jump = speed boost!", {
+          fontSize: "14px",
+          color: "#ffffff",
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
+        this.time.delayedCall(6000, () => hint.destroy());
+
+        this.boardText = this.add.text(12, 12, "", {
+          fontSize: "14px",
+          color: "#ffffff",
+          fontStyle: "bold",
+          backgroundColor: "#00000088",
+          padding: { x: 8, y: 6 },
+        }).setScrollFactor(0).setDepth(20);
+
+        this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+
+        // Checked often, sent at the rate the room can afford, and silent while
+        // standing still so an idle lobby uses no quota at all.
+        this.time.addEvent({
+          delay: 40,
+          loop: true,
+          callback: () => {
+            const now = this.time.now;
+            if (now < this.nextSendAt) return;
+            const movedX = Math.abs(this.player.x - this.lastSent.x);
+            const movedY = Math.abs(this.player.y - this.lastSent.y);
+            if (movedX < 1.5 && movedY < 1.5 && now - this.lastSent.at < 1500) return;
+            this.nextSendAt = now + sendIntervalMs(Object.keys(this.others).length + 1);
+            this.lastSent = { x: this.player.x, y: this.player.y, at: now };
+            this.progress[username] = this.player.x;
+            window.dispatchEvent(
+              new CustomEvent("quizkeen-tx", {
+                detail: { name: username, x: this.player.x, y: this.player.y, c: myColor, k: wornKeenId },
+              })
+            );
+          },
+        });
+
+        this.time.addEvent({
+          delay: 250,
+          loop: true,
+          callback: () => {
+            const medals = ["#1", "#2", "#3"];
+            const lines = Object.entries(this.progress)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 3)
+              .map(([n, x], i) => `${medals[i]} ${n} ${Math.min(100, Math.floor((x / WORLD_END) * 100))}%`);
+            this.boardText.setText(lines.join("\n"));
+          },
+        });
+      }
+
+      jump = () => {
+        if (this.player.body && this.player.body.touching.down) {
+          this.player.setVelocityY(-430);
+          this.burst(this.player.x, this.player.y + 20, 0xffffff, 6);
+        }
+      };
+
+      burst(x: number, y: number, color: number, n: number) {
+        for (let i = 0; i < n; i++) {
+          const p = this.physics.add.sprite(x, y, "dot") as Phaser.Physics.Arcade.Sprite;
+          p.setTint(color);
+          p.setDepth(9);
+          const b = p.body as Phaser.Physics.Arcade.Body;
+          if (b) {
+            b.setAllowGravity(false);
+            const a = Math.random() * Math.PI * 2;
+            const s = 60 + Math.random() * 160;
+            b.setVelocity(Math.cos(a) * s, Math.sin(a) * s);
+          }
+          this.tweens.add({ targets: p, alpha: 0, scale: 0.3, duration: 400, onComplete: () => p.destroy() });
+        }
+      }
+
+      update() {
+        const camX = this.cameras.main.scrollX;
+        this.starsT.tilePositionX = camX * 0.1;
+        this.mFarT.tilePositionX = camX * 0.25;
+        this.mNearT.tilePositionX = camX * 0.45;
+
+        const body = this.player.body as Phaser.Physics.Arcade.Body;
+        let vx = 0;
+        if (this.keys?.right?.isDown || this.wasd?.D?.isDown) vx = RUN_SPEED;
+        if (vx > 0 && !body.touching.down) vx *= 1.25;
+        body.setVelocityX(vx);
+
+        if (vx > 0 && body.touching.down && this.time.now - this.lastDust > 100) {
+          this.lastDust = this.time.now;
+          const d = this.physics.add.sprite(this.player.x - 20, this.player.y + 20, "dot") as Phaser.Physics.Arcade.Sprite;
+          d.setTint(0xf9a8d4);
+          const db = d.body as Phaser.Physics.Arcade.Body;
+          if (db) {
+            db.setAllowGravity(false);
+            db.setVelocity(-60 - Math.random() * 40, -30 - Math.random() * 40);
+          }
+          this.tweens.add({ targets: d, alpha: 0, duration: 350, onComplete: () => d.destroy() });
+        }
+
+        while (true) {
+          const index = this.obstacleIndex;
+          const x = obstacleX(courseSeed, index);
+          if (x > this.player.x + SPAWN_AHEAD || x >= WORLD_END - CLEAR_BEFORE_GOAL) break;
+          const spike = (at: number) => {
+            const ob = this.obstacles.create(at, 246, "obstacle") as Phaser.Physics.Arcade.Sprite;
+            ob.setDepth(6);
+            const b = ob.body as Phaser.Physics.Arcade.Body;
+            if (b) {
+              b.setAllowGravity(false);
+              b.setVelocityX(0);
+            }
+          };
+          spike(x);
+          if (isDoubleSpike(courseSeed, index)) spike(x + DOUBLE_OFFSET);
+          this.obstacleIndex = index + 1;
+        }
+
+        this.obstacles.getChildren().forEach((child) => {
+          const ob = child as Phaser.Physics.Arcade.Sprite;
+          if (ob.x < this.player.x - 1000) ob.destroy();
+        });
+
+        this.trail.push({ x: this.player.x, y: this.player.y });
+        if (this.trail.length > 25) this.trail.shift();
+        this.trailG.clear();
+        for (let i = 1; i < this.trail.length; i++) {
+          const a = i / this.trail.length;
+          this.trailG.lineStyle(3, COLORS[myColor], a * 0.5);
+          this.trailG.beginPath();
+          this.trailG.moveTo(this.trail[i - 1].x, this.trail[i - 1].y);
+          this.trailG.lineTo(this.trail[i].x, this.trail[i].y);
+          this.trailG.strokePath();
+        }
+
+        this.myLabel.setPosition(this.player.x, this.player.y - 36);
+
+        // Draw remote players from their last packet, extrapolated forward by
+        // their speed and eased towards it, so 12 updates a second still look
+        // like continuous movement instead of jumping.
+        const frame = Math.min(0.05, this.game.loop.delta / 1000);
+        const ease = 1 - Math.exp(-frame * 16);
+        for (const name in this.remote) {
+          const s = this.others[name];
+          if (!s) continue;
+          const r = this.remote[name];
+          const age = Math.min(0.3, (performance.now() - r.at) / 1000);
+          // Clamped to the playable column: a late packet or a reset used to be
+          // able to draw somebody below the ground, which reads as "under the
+          // map" even though their own screen is fine.
+          const targetX = Phaser.Math.Clamp(r.x + r.vx * age, 0, WORLD_END + 800);
+          const targetY = Phaser.Math.Clamp(r.y + r.vy * age, 120, 262);
+          s.x += (targetX - s.x) * ease;
+          s.y += (targetY - s.y) * ease;
+          this.otherLabels[name]?.setPosition(s.x, s.y - 36);
+        }
+      }
+    }
+
+    const game = new Phaser.Game({
+      type: Phaser.AUTO,
+      parent: ref.current,
+      width: 800,
+      height: 300,
+      physics: { default: "arcade", arcade: { gravity: { x: 0, y: 900 } } },
+      scene: LobbyScene,
+    });
+
+    const onRx = (e: Event) => {
+      const { name, x, y, c, k } = (e as CustomEvent).detail as {
+        name: string;
+        x: number;
+        y: number;
+        c: number;
+        k?: string | null;
+      };
+      if (name === username) return;
+      const scene = game.scene.getScene("LobbyScene") as LobbyScene;
+      if (!scene || !scene.player) return;
+      scene.progress[name] = x;
+
+      const now = performance.now();
+      const prev = scene.remote[name];
+      let vx = 0;
+      let vy = 0;
+      if (prev && now > prev.at) {
+        const dt = (now - prev.at) / 1000;
+        vx = Math.max(-1200, Math.min(1200, (x - prev.x) / dt));
+        vy = Math.max(-1600, Math.min(1600, (y - prev.y) / dt));
+      }
+      scene.remote[name] = { x, y, vx, vy, at: now };
+
+      let s = scene.others[name];
+      // Someone changed the Keen they are wearing mid-lobby: swap the texture
+      // rather than leaving them as the character they arrived in.
+      if (s && s.getData("keen") !== (k ?? null)) {
+        s.setData("keen", k ?? null);
+        wearTexture(s, k ? KEEN_BY_ID[k] : undefined);
+      }
+      if (!s) {
+        // Wear their Keen too, so a lobby looks like a room full of characters
+        // rather than a room full of squares.
+        const theirKeen = k ? KEEN_BY_ID[k] : undefined;
+        s = scene.physics.add.sprite(x, y, `player-${c}`);
+        s.setData("keen", k ?? null);
+        wearTexture(s, theirKeen);
+        s.setDepth(8);
+        const sb = s.body as Phaser.Physics.Arcade.Body;
+        if (sb) {
+          sb.setAllowGravity(false);
+          sb.setVelocity(0, 0);
+        }
+        scene.others[name] = s;
+        scene.otherLabels[name] = scene.add.text(x, y - 36, name, {
+          fontSize: "13px",
+          color: cssColor(COLORS[c]),
+          fontStyle: "bold",
+        }).setOrigin(0.5).setDepth(9);
+      }
+    };
+    window.addEventListener("quizkeen-rx", onRx);
+
+    // Picked a different Keen in the waiting room: wear it here too, and the
+    // next position packet carries the new id so everyone else redraws you.
+    const onWear = () => {
+      wornKeenId = wornIdFromCookieString(document.cookie);
+      const scene = game.scene.getScene("LobbyScene") as LobbyScene;
+      if (!scene?.player) return;
+      const keen = wornKeenId ? KEEN_BY_ID[wornKeenId] : undefined;
+      if (keen) {
+        wearTexture(scene.player, keen);
+        return;
+      }
+      // Took it off: back to the coloured runner it started as.
+      scene.player.setTexture(`player-${myColor}`);
+      scene.player.setDisplaySize(48, 48);
+      const body = scene.player.body as Phaser.Physics.Arcade.Body | null;
+      if (body) body.setSize(48, 48, true);
+    };
+    window.addEventListener("quizkeen-wear", onWear);
+
+    return () => {
+      window.removeEventListener("quizkeen-rx", onRx);
+      window.removeEventListener("quizkeen-wear", onWear);
+      game.destroy(true);
+    };
+  }, [pin, username]);
+
+  // The canvas is a fixed 800×300, so the frame has to be that wide too: a
+  // full-width border left a strip of empty card beside the game on a desktop
+  // and cut the right of it off on a phone. Capped at 800 and scaled down
+  // with the frame, the border always ends exactly where the game does.
+  return (
+    <div
+      ref={ref}
+      className="mx-auto w-full max-w-[800px] overflow-hidden rounded-xl border border-slate-800 [&>canvas]:block [&>canvas]:h-auto [&>canvas]:w-full"
+    />
+  );
+}

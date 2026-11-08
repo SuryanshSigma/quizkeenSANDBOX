@@ -1,0 +1,868 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ───────────────────────────────────────────────────────────────────────────
+   QuizKeen — the design language.
+
+   Three ideas hold the whole app together:
+
+   1. **Deep space, warm light.** The page is near-black with three slow colour
+      fields drifting behind it; everything the student reads sits on a pane of
+      glass above them. Colour is never flat — it always has a direction.
+   2. **One accent per room.** Every page sets `--accent`; buttons, rings and
+      glows read from it. That is what lets the learning pages be calm cyan, the
+      collection violet and a live game orange without three stylesheets.
+   3. **Motion is feedback, never noise.** Things arrive, count up, fill and
+      settle. All of it is decoration: with `prefers-reduced-motion` the app is
+      completely still and exactly as usable.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@layer base {
+  :root {
+    --background: 224 47% 5%;
+    --foreground: 210 40% 98%;
+    --card: 223 40% 8%;
+    --primary: 243 75% 60%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 217 33% 15%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 68%;
+    --border: 217 33% 18%;
+    --input: 217 33% 18%;
+    --ring: 243 75% 60%;
+    --radius: 0.9rem;
+
+    /* The default accent (indigo) and its three useful forms. Pages override
+       these by setting `data-accent`, below. */
+    --accent-h: 243;
+    --accent-s: 78%;
+    --accent-l: 62%;
+    --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
+    --accent-bright: hsl(var(--accent-h) 90% 72%);
+    --accent-deep: hsl(var(--accent-h) 70% 44%);
+    --accent-soft: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.14);
+    --accent-line: hsl(var(--accent-h) var(--accent-s) var(--accent-l) / 0.35);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-slate-950 text-white antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: #04050c;
+    background-image:
+      radial-gradient(1000px 560px at 8% -10%, rgba(99, 102, 241, 0.22), transparent 62%),
+      radial-gradient(820px 500px at 96% 2%, rgba(192, 38, 211, 0.15), transparent 62%),
+      radial-gradient(980px 640px at 50% 112%, rgba(56, 189, 248, 0.12), transparent 66%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: rgba(129, 140, 248, 0.35);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #05060f, 0 0 0 4px var(--accent-bright);
+    border-radius: 0.6rem;
+  }
+
+  /* Numbers that change should not jitter. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* ── Surfaces ──────────────────────────────────────────────────────────── */
+
+  .glass {
+    @apply border border-white/5 bg-white/[0.03] backdrop-blur-xl;
+  }
+
+  .glass-strong {
+    @apply border border-white/10 bg-slate-900/70 backdrop-blur-xl;
+  }
+
+  /* A pane of glass with a lit top edge, a faint colour bleed from the accent,
+     and a real shadow under it. The single most-used surface in the app. */
+  .surface {
+    @apply relative rounded-[26px] border border-white/10 backdrop-blur-xl;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015) 42%, rgba(255, 255, 255, 0.008)),
+      linear-gradient(135deg, var(--accent-soft), transparent 58%),
+      rgba(6, 8, 20, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.015),
+      0 30px 70px -46px rgba(0, 0, 0, 0.98);
+  }
+
+  /* The same pane, cheaper: for the many rows inside a page. */
+  .surface-flat {
+    @apply relative rounded-2xl border border-white/[0.07] bg-slate-950/50 backdrop-blur-sm;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-indigo-400 via-fuchsia-400 to-sky-400 bg-clip-text text-transparent;
+  }
+
+  /* The hover for anything clickable that is not a button: the card lifts a
+     little, warms up towards the accent, and the light under it grows. */
+  .card-hover {
+    @apply transition-all duration-300 hover:-translate-y-1 hover:border-white/20;
+  }
+  .card-hover:hover {
+    background-color: rgba(255, 255, 255, 0.055);
+    box-shadow: 0 30px 64px -34px var(--accent-line), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-xs font-semibold text-slate-200 backdrop-blur;
+  }
+
+  /* ── The header rail ────────────────────────────────────────────────────
+     One destination in the top bar. At rest it is just a word; the one you are
+     on is a pill lit from above, with the page's accent glowing underneath.
+     `data-active` is set by both the plain links and `MenuPanel`. */
+  .rail-pill {
+    @apply relative inline-flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-full px-2.5 text-[13px] font-bold transition-all duration-200 xl:px-3;
+  }
+  .rail-pill[data-active="true"] {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.045));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.16),
+      0 12px 26px -20px var(--accent-line);
+    color: #fff;
+  }
+  .rail-pill[data-active="false"] {
+    color: #94a3b8;
+  }
+  .rail-pill[data-active="false"]:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+  }
+
+  /* A page's small label and its one big heading. Used instead of inventing a
+     new title style on every screen. */
+  .eyebrow {
+    @apply inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-extrabold uppercase tracking-wider;
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: hsl(var(--accent-h) 90% 84%);
+  }
+
+  .page-title {
+    @apply font-display text-3xl font-extrabold tracking-tight text-white sm:text-4xl;
+  }
+
+  .section-title {
+    @apply font-display text-xl font-extrabold tracking-tight text-white;
+  }
+
+  .answer-tile {
+    @apply relative overflow-hidden rounded-2xl border border-white/10 p-6 text-left text-lg font-bold text-white shadow-raise transition-all duration-200;
+  }
+
+  /* ── Small building blocks ─────────────────────────────────────────────── */
+
+  /* A number with its label, used across the dashboard, the consoles and the
+     new progress page so a "12" always looks like the same kind of thing. */
+  .stat-tile {
+    @apply surface-flat flex flex-col gap-1 p-4;
+  }
+  .stat-value {
+    @apply font-display text-2xl font-extrabold leading-none tracking-tight text-white;
+  }
+  .stat-label {
+    @apply text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500;
+  }
+
+  /* XP, progress and quest bars all fill the same way. */
+  .bar {
+    @apply relative h-2.5 w-full overflow-hidden rounded-full bg-white/[0.07];
+  }
+  .bar-fill {
+    @apply relative h-full rounded-full;
+    background-image: linear-gradient(90deg, var(--accent-deep), var(--accent), var(--accent-bright));
+    background-size: 200% 100%;
+    animation: bar-pan 6s ease-in-out infinite;
+    transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  /* The travelling light that makes a bar read as "alive". */
+  .bar-fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+    transform: translateX(-100%);
+    animation: bar-sheen 2.6s ease-in-out infinite;
+  }
+
+  /* A pointer-tracked highlight. The component writes --mx/--my on hover. */
+  .spotlight::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    background: radial-gradient(
+      260px circle at var(--mx, 50%) var(--my, 50%),
+      hsl(var(--accent-h) 90% 70% / 0.16),
+      transparent 68%
+    );
+  }
+  .spotlight:hover::before {
+    opacity: 1;
+  }
+
+  /* Placeholder rows while a route streams in. */
+  .skeleton {
+    @apply relative overflow-hidden rounded-xl bg-white/[0.05];
+  }
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+    transform: translateX(-100%);
+    animation: shimmer 1.7s ease-in-out infinite;
+  }
+
+  /* Medals for the top three of anything. */
+  .medal {
+    @apply relative grid place-items-center rounded-2xl font-display font-extrabold;
+  }
+  .medal::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.55) 50%, transparent 70%);
+    transform: translateX(-120%);
+    animation: medal-sheen 4.5s ease-in-out infinite;
+  }
+
+  /* Animated gradient text, for a heading that should feel alive. */
+  .text-shine {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--accent-h) 90% 78%),
+      #fff 45%,
+      hsl(var(--accent-h) 90% 72%) 60%,
+      hsl(calc(var(--accent-h) + 40) 90% 72%)
+    );
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: text-pan 7s linear infinite;
+  }
+
+  /* The streak flame on the dashboard and the progress page. */
+  .flame {
+    animation: flame-flicker 1.6s ease-in-out infinite;
+    transform-origin: 50% 85%;
+  }
+}
+
+@layer utilities {
+  .animate-delay-1 { animation-delay: 0.06s; }
+  .animate-delay-2 { animation-delay: 0.12s; }
+  .animate-delay-3 { animation-delay: 0.18s; }
+  .animate-delay-4 { animation-delay: 0.24s; }
+  .animate-delay-5 { animation-delay: 0.30s; }
+  .animate-delay-6 { animation-delay: 0.36s; }
+
+  /* A list that arrives one row at a time. The item sets `--i`. */
+  .stagger {
+    animation: rise-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--i, 0) * 55ms);
+  }
+
+  /* A list that arrives one row at a time, whatever the layout is: the
+     animation is on the real children, and only the delay is staggered. */
+  .stagger-list > * {
+    animation: rise-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .stagger-list > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-list > *:nth-child(2) { animation-delay: 45ms; }
+  .stagger-list > *:nth-child(3) { animation-delay: 90ms; }
+  .stagger-list > *:nth-child(4) { animation-delay: 135ms; }
+  .stagger-list > *:nth-child(5) { animation-delay: 180ms; }
+  .stagger-list > *:nth-child(6) { animation-delay: 225ms; }
+  .stagger-list > *:nth-child(7) { animation-delay: 270ms; }
+  .stagger-list > *:nth-child(8) { animation-delay: 315ms; }
+  .stagger-list > *:nth-child(9) { animation-delay: 360ms; }
+  .stagger-list > *:nth-child(10) { animation-delay: 405ms; }
+  .stagger-list > *:nth-child(n + 11) { animation-delay: 450ms; }
+
+  /* Fades the bottom of a scrolling list instead of cutting it off. */
+  .scroll-fade {
+    mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 88%, transparent 100%);
+  }
+
+  /*
+   * The header's tab rail.
+   *
+   * A bar with more destinations than room should scroll sideways, not wrap:
+   * a wrapped header changes height while you are aiming at a button. The
+   * scrollbar itself is the only part nobody wants to see.
+   */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  /* A label that must never break onto a second line inside the header. */
+  .nowrap {
+    white-space: nowrap;
+  }
+}
+
+/* ── Accents ──────────────────────────────────────────────────────────────
+   One attribute swaps the whole colour mood of a page. Anything using the
+   `--accent*` variables follows, including the bars, eyebrows and glows. */
+[data-accent] {
+  --accent-h: 243;
+}
+[data-accent="indigo"]  { --accent-h: 240; --accent-s: 84%; --accent-l: 64%; }
+[data-accent="violet"]  { --accent-h: 265; --accent-s: 84%; --accent-l: 66%; }
+[data-accent="fuchsia"] { --accent-h: 292; --accent-s: 84%; --accent-l: 66%; }
+[data-accent="rose"]    { --accent-h: 343; --accent-s: 84%; --accent-l: 64%; }
+[data-accent="amber"]   { --accent-h: 38;  --accent-s: 94%; --accent-l: 60%; }
+[data-accent="orange"]  { --accent-h: 22;  --accent-s: 92%; --accent-l: 60%; }
+[data-accent="emerald"] { --accent-h: 158; --accent-s: 76%; --accent-l: 56%; }
+[data-accent="teal"]    { --accent-h: 174; --accent-s: 74%; --accent-l: 52%; }
+[data-accent="sky"]     { --accent-h: 199; --accent-s: 88%; --accent-l: 62%; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.35);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(129, 140, 248, 0.6);
+  background-clip: content-box;
+}
+
+/* ── Keens ────────────────────────────────────────────────────────────────
+   Kroma Keens are not a colour, they are every colour: a rotating conic
+   gradient behind the character and a sliding one through the text. Both live
+   outside the Tailwind layers on purpose — they have to beat the utility
+   classes that set a flat text colour on the very same element. */
+.keen-chroma {
+  background-image: conic-gradient(
+    from 0deg,
+    #ff5f6d,
+    #ffc371,
+    #47e891,
+    #38bdf8,
+    #a855f7,
+    #f472b6,
+    #ff5f6d
+  );
+  background-size: 180% 180%;
+  animation: keen-chroma-rotate 7s linear infinite;
+  filter: saturate(1.35);
+}
+
+@keyframes keen-chroma-rotate {
+  0% { transform: rotate(0deg) scale(1.4); }
+  100% { transform: rotate(360deg) scale(1.4); }
+}
+
+.keen-chroma-text {
+  background-image: linear-gradient(
+    90deg,
+    #ff8fa3,
+    #ffd166,
+    #7ae582,
+    #6ec6ff,
+    #c084fc,
+    #f472b6,
+    #ff8fa3
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* The collection grid scrolls inside its own card; a visible scrollbar on a
+   grid of characters is noise. */
+.keen-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.keen-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+/* Click feedback */
+button, a {
+  transition: transform 0.08s ease, filter 0.08s ease, background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+button:hover, a:hover {
+  filter: brightness(1.08);
+}
+button:active, a:active {
+  transform: scale(0.97);
+}
+
+/* ── Motion: the shell ────────────────────────────────────────────────────
+   Everything below is decoration. None of it changes layout, none of it is
+   required to read the page, and all of it is switched off by the
+   reduced-motion block at the bottom of this file. */
+
+/* A route arriving. `template.tsx` remounts, so this plays once per visit.
+   `backwards`, not `both`: an animation that retains its final keyframe leaves
+   an identity transform on this wrapper, and a transformed ancestor is a
+   containing block — every `position: fixed` overlay in a page (the Keen sheet,
+   the pack opener, confetti) would then be laid out against the whole document
+   instead of the screen, so opening one at the bottom of a long page showed a
+   blurred page with the card far above. Releasing the transform when the
+   animation ends keeps the entrance and gives fixed positioning back. */
+.page-enter {
+  /* Quick enough that a click reads as "arrived", slow enough to still feel
+     like a page settling in. It used to be 0.5 s from opacity 0, which made
+     every navigation look like it was still loading for half a second. */
+  animation: page-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.998);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes bar-pan {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes bar-sheen {
+  0% { transform: translateX(-100%); }
+  55%, 100% { transform: translateX(120%); }
+}
+
+@keyframes medal-sheen {
+  0%, 70% { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
+}
+
+@keyframes text-pan {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes flame-flicker {
+  0%, 100% { transform: scale(1) rotate(-2deg); filter: brightness(1); }
+  35% { transform: scale(1.09) rotate(2deg); filter: brightness(1.18); }
+  70% { transform: scale(0.98) rotate(-1deg); filter: brightness(0.96); }
+}
+
+/* Three soft fields drifting behind the app. */
+.aurora-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(72px);
+  will-change: transform;
+  pointer-events: none;
+}
+
+.aurora-a {
+  top: -18rem;
+  left: -12rem;
+  width: 46rem;
+  height: 46rem;
+  background: radial-gradient(circle at 35% 35%, rgba(99, 102, 241, 0.5), transparent 66%);
+  animation: aurora-a 24s ease-in-out infinite alternate;
+}
+
+.aurora-b {
+  top: -8rem;
+  right: -14rem;
+  width: 40rem;
+  height: 40rem;
+  background: radial-gradient(circle at 60% 40%, rgba(192, 38, 211, 0.42), transparent 68%);
+  animation: aurora-b 31s ease-in-out infinite alternate;
+}
+
+.aurora-c {
+  bottom: -20rem;
+  left: 30%;
+  width: 44rem;
+  height: 44rem;
+  background: radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.32), transparent 70%);
+  animation: aurora-c 38s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(8vw, 6vh, 0) scale(1.18); }
+}
+@keyframes aurora-b {
+  from { transform: translate3d(0, 0, 0) scale(1.1); }
+  to { transform: translate3d(-7vw, 4vh, 0) scale(0.92); }
+}
+@keyframes aurora-c {
+  from { transform: translate3d(0, 0, 0) scale(0.95); }
+  to { transform: translate3d(5vw, -6vh, 0) scale(1.2); }
+}
+
+/* A faint grid, faded out at the edges so it reads as depth, not wallpaper. */
+.aurora-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.055) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(120% 90% at 50% 0%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* A slow colour drift over the whole background, so a page that is left open
+   never looks like a screenshot. Cheap: one 60s filter animation on a fixed
+   layer, no repaint of anything on top of it. */
+.aurora-mesh {
+  position: absolute;
+  inset: 0;
+  z-index: -20;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 45% at 15% 12%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(50% 40% at 85% 8%, rgba(217, 70, 239, 0.12), transparent 62%),
+    radial-gradient(70% 55% at 50% 100%, rgba(34, 211, 238, 0.1), transparent 62%);
+  animation: mesh-drift 42s ease-in-out infinite alternate;
+}
+
+@keyframes mesh-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1.02); filter: hue-rotate(0deg); }
+  to { transform: translate3d(2%, 2%, 0) scale(1.08); filter: hue-rotate(24deg); }
+}
+
+/* ── Pointer tilt ─────────────────────────────────────────────────────────
+   The component writes --tilt-rx / --tilt-ry / --tilt-mx / --tilt-my. Until a
+   pointer moves over it nothing is rotated, so the resting state is flat. */
+.tilt {
+  position: relative;
+  transform: perspective(900px) rotateX(var(--tilt-rx, 0deg)) rotateY(var(--tilt-ry, 0deg));
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-style: preserve-3d;
+}
+.tilt[data-tilting="on"] {
+  transition-duration: 0.1s;
+}
+
+.tilt-glare {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  background: radial-gradient(
+    240px circle at var(--tilt-mx, 50%) var(--tilt-my, 50%),
+    rgba(255, 255, 255, 0.16),
+    transparent 68%
+  );
+}
+.tilt:hover .tilt-glare {
+  opacity: 1;
+}
+
+/* A highlight that runs across a button when you hover it. */
+.btn-shine {
+  position: relative;
+  overflow: hidden;
+}
+.btn-shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-130%) skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.32), transparent);
+  transition: transform 0.7s ease;
+  pointer-events: none;
+}
+.btn-shine:hover::after {
+  transform: translateX(130%) skewX(-18deg);
+}
+
+/* A band of light that crosses the brand mark every few seconds — the one
+   moving thing in the bar, so the eye goes to the logo rather than the noise. */
+.brand-sheen {
+  background: linear-gradient(115deg, transparent 18%, rgba(255, 255, 255, 0.5) 46%, transparent 74%);
+  transform: translateX(-130%);
+  animation: brand-sheen 7s ease-in-out infinite;
+}
+
+@keyframes brand-sheen {
+  0%, 62% { transform: translateX(-130%); }
+  90%, 100% { transform: translateX(130%); }
+}
+
+/* A correct answer: the tile holds its own colour and the ring flies out. */
+.answer-right {
+  animation: answer-right 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes answer-right {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
+  40% { transform: scale(1.03); box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+.answer-wrong {
+  animation: answer-wrong 0.45s ease-in-out both;
+}
+
+@keyframes answer-wrong {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+/* ── Counting and celebrating ───────────────────────────────────────────── */
+
+/* A number that just changed: a short scale kick. */
+.xp-kick {
+  animation: xp-kick 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes xp-kick {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
+
+/* The level-up band that slides down when a player gains a level. */
+.level-up {
+  animation: level-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes level-up {
+  0% { opacity: 0; transform: translateY(-18px) scale(0.94); }
+  60% { opacity: 1; transform: translateY(3px) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Confetti / sparkle particles: one burst, then gone. Each particle carries
+   its own --dx / --dy / --rot so a single keyframe serves the whole spray. */
+.spark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: spark-fly 900ms cubic-bezier(0.17, 0.85, 0.35, 1) forwards;
+}
+
+@keyframes spark-fly {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4) rotate(0deg); }
+  15% { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, 0px))) scale(var(--sc, 1)) rotate(var(--rot, 180deg));
+  }
+}
+
+/* A card that just unlocked (a quest, an achievement). */
+.unlock-pop {
+  animation: unlock-pop 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes unlock-pop {
+  0% { opacity: 0; transform: scale(0.86) rotate(-2deg); }
+  55% { opacity: 1; transform: scale(1.03) rotate(1deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+/* Soft attention pulse for a call to action that is waiting on the player. */
+.pulse-soft {
+  animation: pulse-soft 2.6s ease-in-out infinite;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 hsl(var(--accent-h) 90% 62% / 0); }
+  50% { opacity: 0.96; box-shadow: 0 0 0 10px hsl(var(--accent-h) 90% 62% / 0.06); }
+}
+
+/* ── The game stage ──────────────────────────────────────────────────────
+   A match owns the whole screen and paints its own room. Everything here is
+   a gradient, a mask and one keyframe: the compositor animates it, so the
+   phone still has room to decode the next question while the walls move.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.qk-stage {
+  /* Each mode sets this; the stage turns it into the light on the floor. */
+  --stage-glow: 245 80% 66%;
+  background:
+    radial-gradient(110% 60% at 50% 110%, hsl(var(--stage-glow) / 0.16), transparent 70%),
+    #05060f;
+}
+
+.qk-stage[data-mode="vault"] { --stage-glow: 38 92% 56%; }
+.qk-stage[data-mode="crypto"] { --stage-glow: 160 84% 45%; }
+.qk-stage[data-mode="pirate"] { --stage-glow: 350 89% 60%; }
+
+/* The floor every mode shares. */
+.qk-stage-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(78% 68% at 50% 45%, #000 25%, transparent 100%);
+          mask-image: radial-gradient(78% 68% at 50% 45%, #000 25%, transparent 100%);
+}
+
+/* Fine horizontal lines, so a flat area still has texture. */
+.qk-scan {
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.6) 0 1px,
+    transparent 1px 4px
+  );
+  opacity: 0.035;
+}
+
+/* Crypto Clash — columns of falling data. Thin masked stripes read as a
+   terminal raining characters without shipping a single one. */
+.qk-rain {
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgb(34 197 94 / 0) 0 10px,
+    rgb(52 211 153 / 0.55) 10px 12px,
+    rgb(34 197 94 / 0) 12px 46px
+  );
+  background-size: 100% 46px;
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 1.5px, transparent 1.5px 30px);
+          mask-image: repeating-linear-gradient(90deg, #000 0 1.5px, transparent 1.5px 30px);
+  animation: qk-rain 1.5s linear infinite;
+}
+
+@keyframes qk-rain {
+  to { background-position: 0 46px; }
+}
+
+/* Vault Raiders — the vault door's light, turning. */
+.qk-vault-rays {
+  background: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    rgb(245 158 11 / 0.18) 0deg 4deg,
+    rgb(245 158 11 / 0) 4deg 16deg
+  );
+  -webkit-mask-image: radial-gradient(closest-side, rgb(0 0 0 / 0.95), transparent 76%);
+          mask-image: radial-gradient(closest-side, rgb(0 0 0 / 0.95), transparent 76%);
+  animation: qk-turn 70s linear infinite;
+}
+
+@keyframes qk-turn {
+  to { transform: rotate(360deg); }
+}
+
+/* Pirate Heist — a slow tide drifting under the question. */
+.qk-tide {
+  background-image:
+    radial-gradient(55% 38% at 18% 102%, rgb(244 63 94 / 0.26), transparent 72%),
+    radial-gradient(48% 34% at 82% 104%, rgb(245 158 11 / 0.18), transparent 72%);
+  animation: qk-drift 19s ease-in-out infinite alternate;
+}
+
+@keyframes qk-drift {
+  from { transform: translate3d(-2.5%, 1%, 0) scale(1.04); }
+  to { transform: translate3d(2.5%, -1%, 0) scale(1.12); }
+}
+
+/* An answer tile. Big enough to hit on a phone, and it answers the finger
+   before the server does — the press is the feedback. */
+.qk-answer {
+  transition:
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.18s ease,
+    filter 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.qk-answer:not(:disabled):hover {
+  transform: translateY(-3px) scale(1.012);
+  filter: brightness(1.08);
+}
+
+.qk-answer:not(:disabled):active {
+  transform: scale(0.984);
+}
+
+/* The sheen that crosses a tile on hover, so it reads as a button and not a
+   coloured rectangle. */
+.qk-answer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, transparent 30%, rgb(255 255 255 / 0.22) 50%, transparent 70%);
+  opacity: 0;
+  transform: translateX(-60%);
+  transition: opacity 0.2s ease, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.qk-answer:not(:disabled):hover::after {
+  opacity: 1;
+  transform: translateX(60%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
